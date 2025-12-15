@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ultra Modern Whiteboard</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; font-family:'Helvetica Neue', sans-serif; user-select:none; }
+body { display:flex; height:100vh; background:#000; color:#fff; overflow:hidden; }
+.sidebar {
+    width:220px; background:#111; display:flex; flex-direction:column; padding:1rem; transition: transform 0.3s;
+    border-right:1px solid #222;
+}
+.sidebar.hidden { transform: translateX(-250px); }
+.sidebar h2 { font-size:1.2rem; margin-bottom:1rem; color:#fff; font-weight:400; }
+.board-list { flex:1; overflow-y:auto; margin-bottom:1rem; }
+.board-list button {
+    width:100%; padding:0.6rem; margin-bottom:0.4rem; border:none; border-radius:4px;
+    text-align:left; cursor:pointer; background:#222; color:#fff; font-weight:400;
+    transition:0.2s;
+}
+.board-list button.active { background:#fff; color:#000; font-weight:500; }
+#toggle-sidebar {
+    position:absolute; top:1rem; left:230px; z-index:15; background:#fff; border:none;
+    border-radius:4px; width:30px; height:30px; cursor:pointer; color:#000; font-size:18px;
+    transition:left 0.3s;
+}
+.sidebar.hidden ~ #toggle-sidebar { left:10px; }
+.toolbar {
+    display:flex; gap:0.3rem; padding:0.5rem; background:#111; border-bottom:1px solid #222; z-index:10;
+}
+.toolbar button {
+    padding:0.4rem 0.6rem; border:none; border-radius:4px; background:#222; color:#fff; cursor:pointer;
+    font-size:14px; transition:0.2s;
+}
+.toolbar button.active, .toolbar button:hover { background:#fff; color:#000; }
+.canvas-container { flex:1; position:relative; background:#000; overflow:hidden; }
+canvas { position:absolute; top:0; left:0; cursor:crosshair; background:#000; display:block; }
+.draggable {
+    position:absolute; padding:0.4rem 0.6rem; border-radius:4px; background:#111;
+    color:#fff; cursor:move; min-width:80px; min-height:30px; font-size:14px; line-height:1.2; box-shadow:0 0 6px rgba(255,255,255,0.2);
+}
+.draggable[contenteditable]:focus { outline:1px dashed #fff; }
+</style>
+</head>
+<body>
+
+<div class="sidebar" id="sidebar">
+    <h2>Boards</h2>
+    <div class="board-list" id="board-list"></div>
+    <button id="create-board">+ New Board</button>
+</div>
+
+<button id="toggle-sidebar">☰</button>
+
+<div class="main" style="flex:1; display:flex; flex-direction:column;">
+    <div class="toolbar">
+        <button data-tool="select" class="active">Select</button>
+        <button data-tool="draw">Line</button>
+        <button data-tool="rect">Rect</button>
+        <button data-tool="circle">Circle</button>
+        <button data-tool="arrow">Arrow</button>
+        <button data-tool="text">Text</button>
+        <button id="undo">Undo</button>
+        <button id="redo">Redo</button>
+        <button id="clear-board">Clear</button>
+    </div>
+    <div class="canvas-container" id="canvas-container">
+        <canvas id="whiteboard"></canvas>
+    </div>
+</div>
+
+<script>
+const canvasContainer = document.getElementById('canvas-container');
+const canvas = document.getElementById('whiteboard');
+const ctx = canvas.getContext('2d');
+let currentTool = 'select';
+let isDrawing=false, startX=0, startY=0;
+
+// Boards
+const boardListEl = document.getElementById('board-list');
+const boards = [];
+let activeBoardIndex=-1;
+
+// Undo/Redo stacks
+let undoStack=[], redoStack=[];
+
+// Resize
+function resizeCanvas(){
+    canvas.width = canvasContainer.clientWidth;
+    canvas.height = canvasContainer.clientHeight;
+    loadBoard();
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// Toolbar
+document.querySelectorAll('.toolbar button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+        if(['undo','redo','clear'].includes(btn.id)) return;
+        document.querySelectorAll('.toolbar button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        currentTool = btn.dataset.tool;
+        canvas.style.cursor = (currentTool==='text'?'default':'crosshair');
+    });
+});
+
+// Canvas Drawing
+canvas.addEventListener('mousedown', e=>{
+    if(['draw','rect','circle','arrow'].includes(currentTool)){
+        isDrawing=true;
+        startX = e.offsetX;
+        startY = e.offsetY;
+        if(currentTool==='draw'){ ctx.beginPath(); ctx.moveTo(startX,startY); }
+    }
+});
+canvas.addEventListener('mousemove', e=>{
+    if(!isDrawing) return;
+    if(currentTool==='draw'){
+        ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+        ctx.lineTo(e.offsetX,e.offsetY); ctx.stroke();
+    }
+});
+canvas.addEventListener('mouseup', e=>{
+    if(!isDrawing) return;
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+    if(currentTool==='rect'){ ctx.strokeRect(startX,startY,e.offsetX-startX,e.offsetY-startY); }
+    if(currentTool==='circle'){ ctx.beginPath(); const r=Math.hypot(e.offsetX-startX,e.offsetY-startY); ctx.arc(startX,startY,r,0,2*Math.PI); ctx.stroke(); }
+    if(currentTool==='arrow'){ drawArrow(startX,startY,e.offsetX,e.offsetY); }
+    isDrawing=false;
+    pushUndo();
+    saveBoard();
+});
+
+function drawArrow(x1,y1,x2,y2){
+    const headlen=10;
+    const dx=x2-x1, dy=y2-y1;
+    const angle=Math.atan2(dy,dx);
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.lineTo(x2,y2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-headlen*Math.cos(angle-Math.PI/6), y2-headlen*Math.sin(angle-Math.PI/6));
+    ctx.lineTo(x2-headlen*Math.cos(angle+Math.PI/6), y2-headlen*Math.sin(angle+Math.PI/6));
+    ctx.lineTo(x2,y2);
+    ctx.fillStyle='#fff'; ctx.fill();
+}
+
+// Text Elements
+function addTextElement(){
+    const rect = canvas.getBoundingClientRect();
+    const div = document.createElement('div');
+    div.classList.add('draggable');
+    div.style.left = rect.width/2-50+'px';
+    div.style.top = rect.height/2-15+'px';
+    div.contentEditable=true;
+    div.innerText='Text';
+    makeDraggable(div);
+    div.addEventListener('input', saveBoard);
+    canvasContainer.appendChild(div);
+    pushUndo();
+    saveBoard();
+}
+
+document.querySelectorAll('[data-tool]').forEach(btn=>{
+    if(btn.dataset.tool==='text'){
+        btn.addEventListener('click', addTextElement);
+    }
+});
+
+// Draggable
+function makeDraggable(el){
+    let offsetX, offsetY;
+    el.addEventListener('mousedown', e=>{
+        if(currentTool!=='select') return;
+        e.preventDefault();
+        offsetX = e.clientX - el.offsetLeft;
+        offsetY = e.clientY - el.offsetTop;
+        function move(e){ el.style.left=e.clientX-offsetX+'px'; el.style.top=e.clientY-offsetY+'px'; }
+        function up(){ window.removeEventListener('mousemove',move); window.removeEventListener('mouseup',up); pushUndo(); saveBoard(); }
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+    });
+}
+
+// Sidebar
+const sidebar = document.getElementById('sidebar');
+const toggleBtn = document.getElementById('toggle-sidebar');
+toggleBtn.addEventListener('click', ()=>sidebar.classList.toggle('hidden'));
+
+// Boards
+document.getElementById('create-board').addEventListener('click', ()=>{
+    const input = document.createElement('input');
+    input.placeholder='Board Name...';
+    input.style.width='100%'; input.style.padding='0.4rem'; input.style.marginBottom='0.4rem';
+    boardListEl.prepend(input); input.focus();
+    input.addEventListener('keydown', e=>{
+        if(e.key==='Enter' && input.value.trim()!==''){
+            boards.push({name:input.value, elements:[], drawings:null});
+            renderBoards();
+            setActiveBoard(boards.length-1);
+        }
+        if(e.key==='Escape'){ input.remove(); }
+    });
+});
+
+function renderBoards(){
+    boardListEl.innerHTML='';
+    boards.forEach((b,i)=>{
+        const btn = document.createElement('button'); btn.innerText=b.name;
+        btn.classList.toggle('active',i===activeBoardIndex);
+        btn.addEventListener('click', ()=>setActiveBoard(i));
+        boardListEl.appendChild(btn);
+    });
+}
+
+function setActiveBoard(i){
+    activeBoardIndex=i;
+    renderBoards();
+    loadBoard();
+}
+
+// Clear
+document.getElementById('clear-board').addEventListener('click', ()=>{
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    canvasContainer.querySelectorAll('.draggable').forEach(d=>d.remove());
+    pushUndo();
+    saveBoard();
+});
+
+// Undo/Redo
+function pushUndo(){
+    undoStack.push(canvas.toDataURL());
+    if(undoStack.length>50) undoStack.shift();
+}
+document.getElementById('undo').addEventListener('click', ()=>{
+    if(undoStack.length===0) return;
+    redoStack.push(canvas.toDataURL());
+    const last = undoStack.pop();
+    const img = new Image();
+    img.src = last;
+    img.onload = ()=>ctx.drawImage(img,0,0,canvas.width,canvas.height);
+});
+document.getElementById('redo').addEventListener('click', ()=>{
+    if(redoStack.length===0) return;
+    undoStack.push(canvas.toDataURL());
+    const last = redoStack.pop();
+    const img = new Image();
+    img.src = last;
+    img.onload = ()=>ctx.drawImage(img,0,0,canvas.width,canvas.height);
+});
+
+// Save & Load
+function saveBoard(){
+    if(activeBoardIndex<0) return;
+    const board = boards[activeBoardIndex];
+    board.drawings = canvas.toDataURL();
+    board.elements = [];
+    canvasContainer.querySelectorAll('.draggable').forEach(el=>{
+        board.elements.push({
+            left:el.offsetLeft,
+            top:el.offsetTop,
+            width:el.offsetWidth,
+            height:el.offsetHeight,
+            fontSize:el.style.fontSize,
+            content:el.innerText
+        });
+    });
+}
+
+function loadBoard(){
+    if(activeBoardIndex<0) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    canvasContainer.querySelectorAll('.draggable').forEach(d=>d.remove());
+    const board = boards[activeBoardIndex];
+    if(board.drawings){
+        const img = new Image();
+        img.src = board.drawings;
+        img.onload = ()=>ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    }
+    board.elements.forEach(d=>{
+        const div = document.createElement('div');
+        div.classList.add('draggable');
+        div.style.left=d.left+'px';
+        div.style.top=d.top+'px';
+        div.style.width=d.width+'px';
+        div.style.height=d.height+'px';
+        div.style.fontSize=d.fontSize;
+        div.contentEditable=true;
+        div.innerText=d.content;
+        makeDraggable(div);
+        div.addEventListener('input', saveBoard);
+        canvasContainer.appendChild(div);
+    });
+}
+</script>
+</body>
+</html>
